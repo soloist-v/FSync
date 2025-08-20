@@ -10,15 +10,16 @@ use notify::{RecommendedWatcher, RecursiveMode, Watcher};
 use std::collections::HashMap;
 use std::time::UNIX_EPOCH;
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use tokio::sync::watch::Ref;
 use tokio::sync::{mpsc, watch};
 use walkdir::WalkDir;
 
 /// Public handle returned to callers for controlling a running sync task.
 #[derive(Debug)]
 pub struct SyncTaskHandle {
-    pub cfg: TaskConfig,
-    pub ctrl_tx: mpsc::Sender<TaskCommand>,
-    pub state_rx: watch::Receiver<TaskState>,
+    cfg: TaskConfig,
+    ctrl_tx: mpsc::Sender<TaskCommand>,
+    state_rx: watch::Receiver<TaskState>,
 }
 
 impl SyncTaskHandle {
@@ -28,6 +29,9 @@ impl SyncTaskHandle {
 
     pub fn stop(&self) {
         let _ = self.ctrl_tx.try_send(TaskCommand::Stop);
+    }
+    pub fn state(&self) -> Ref<'_, TaskState> {
+        self.state_rx.borrow()
     }
 }
 

@@ -89,7 +89,7 @@ fn update(state: &mut FSyncApp, message: Message) -> Task<Message> {
                         }
                     }
                     TaskState::Running => {
-                        if let Some(h) = &task.handle { let _ = h.ctrl_tx.try_send(TaskCommand::Stop); }
+                        if let Some(h) = &task.handle { let _ = h.stop(); }
                     }
                 }
             }
@@ -132,12 +132,12 @@ fn update(state: &mut FSyncApp, message: Message) -> Task<Message> {
             Task::batch(tasks)
         }
         Message::StopAll => {
-            for tv in &mut state.tasks { if let Some(h) = &tv.handle { let _ = h.ctrl_tx.try_send(TaskCommand::Stop); } }
+            for tv in &mut state.tasks { if let Some(h) = &tv.handle { let _ = h.stop(); } }
             Task::none()
         }
         Message::Toast(msg) => { state.toast = Some((msg, std::time::Instant::now())); Task::none() }
         Message::Tick => {
-            for tv in &mut state.tasks { if let Some(h) = &tv.handle { let st = (*h.state_rx.borrow()).clone(); tv.state = st; } }
+            for tv in &mut state.tasks { if let Some(h) = &tv.handle { let st = (*h.state()).clone(); tv.state = st; } }
             if let Some((_, t0)) = &state.toast { if t0.elapsed() > std::time::Duration::from_secs(3) { state.toast = None; } }
             Task::none()
         }
