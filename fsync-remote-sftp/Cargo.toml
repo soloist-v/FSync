@@ -1,0 +1,16 @@
+[package]
+name = "fsync-remote-sftp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tracing = { workspace = true }
+russh = { version = "0.54.1", features = ["default"] }
+russh-sftp = { version = "2.1.1", features = [] }
+async-trait = "0.1"
+anyhow = "1.0"
+fsync-core = { path = "../fsync-core" }
+tokio = { version = "1.28", features = ["full"] }
+futures = "0.3"
+base64 = "0.22"
+#async-ssh2-tokio = { version = "0.9.0", features = [] }

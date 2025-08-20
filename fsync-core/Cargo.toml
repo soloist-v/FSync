@@ -1,0 +1,21 @@
+[package]
+name = "fsync-core"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1.28", features = ["full"] }
+tokio-util = { version = "0.7.16", features = ["default"] }
+tracing = "0.1.41"
+async-trait = "0.1"
+notify = "8.2.0"
+indexmap = { version = "2.10.0", features = ["default"] }
+foyer = "0.19.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+uuid = { version = "1", features = ["v4", "serde"] }
+thiserror = "2.0.12"
+anyhow = "1.0"
+globset = "0.4"
+walkdir = "2.4"
+
