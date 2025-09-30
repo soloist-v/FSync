@@ -1,3 +1,4 @@
+use crate::convert::collapse_ops;
 use crate::{
     config::TaskConfig,
     file_op::{event_to_ops, FsEvent},
@@ -13,7 +14,6 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::watch::Ref;
 use tokio::sync::{mpsc, watch};
 use walkdir::WalkDir;
-use crate::convert::collapse_ops;
 
 /// Public handle returned to callers for controlling a running sync task.
 #[derive(Debug)]
@@ -206,7 +206,8 @@ impl SyncTask {
                                 let mtime = dur.as_secs();
                                 let key = p.to_string_lossy().to_string();
                                 let last = store.get_u64(&key).await?;
-                                if last.map(|v| v >= mtime).unwrap_or(false) {
+                                // if last.map(|v| v == mtime).unwrap_or(false) {
+                                if last == Some(mtime) {
                                     continue;
                                 }
                                 let r = remote_path(p);
@@ -282,7 +283,9 @@ impl SyncTask {
                             FsEvent::Rename(from, to) => filter.check(from) || filter.check(to),
                             _ => filter.check(op.path()),
                         };
-                        if pass { let _ = op_tx.blocking_send(op); }
+                        if pass {
+                            let _ = op_tx.blocking_send(op);
+                        }
                     }
                 }
                 Err(e) => eprintln!("watch error: {e}"),
@@ -343,40 +346,4 @@ fn parse_size_filter(input: Option<&str>) -> (Option<u64>, Option<u64>) {
         }
     }
     (None, None)
-}
-
-impl SyncTask {
-    // Merge only consecutive Modify ops for the same path, breaking on any
-    // Rename/Remove/Create/MkDir for that path. Keep original order otherwise.
-    fn collapse_ops(&self, ops: Vec<FsEvent>) -> Vec<FsEvent> {
-        let mut out: Vec<FsEvent> = Vec::with_capacity(ops.len());
-        let mut last_modify_idx: HashMap<PathBuf, usize> = HashMap::new();
-
-        for op in ops {
-            match &op {
-                FsEvent::Modify(p) => {
-                    if let Some(&idx) = last_modify_idx.get(p) {
-                        out[idx] = FsEvent::Modify(p.clone());
-                    } else {
-                        last_modify_idx.insert(p.clone(), out.len());
-                        out.push(op);
-                    }
-                }
-                FsEvent::Remove(p) => {
-                    last_modify_idx.remove(p);
-                    out.push(op);
-                }
-                FsEvent::Rename(from, to) => {
-                    last_modify_idx.remove(from);
-                    last_modify_idx.remove(to);
-                    out.push(op);
-                }
-                FsEvent::Create(p) | FsEvent::MkDir(p) => {
-                    last_modify_idx.remove(p);
-                    out.push(op);
-                }
-            }
-        }
-        out
-    }
 }
