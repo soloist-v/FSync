@@ -1,7 +1,7 @@
 //! FSync storage layer – wraps `foyer` for per-task timestamp persistence.
 
 use anyhow::Result;
-use foyer::HybridCache;
+use foyer::{DeviceBuilder, HybridCache};
 use std::path::Path;
 
 pub struct FoyerStore {
@@ -10,9 +10,14 @@ pub struct FoyerStore {
 
 impl FoyerStore {
     pub async fn open<P: AsRef<Path>>(memory_size: usize, cache_dir: P) -> Result<Self> {
-        let inner = HybridCache::builder()
+        let device = foyer::FsDeviceBuilder::new(cache_dir)
+            .with_capacity(256 * 1024 * 1024)
+            .build()?;
+        let inner = foyer::HybridCacheBuilder::new()
+            .with_name("foyer")
             .memory(memory_size)
             .storage()
+            .with_engine_config(foyer::BlockEngineBuilder::new(device))
             .build()
             .await?;
         Ok(Self { inner })

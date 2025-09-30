@@ -7,9 +7,11 @@ mod manager;
 mod remote;
 mod storage;
 mod task;
+mod convert;
+mod utils;
 
 pub use config::{Pattern, RemoteCfg, TaskConfig};
-pub use file_op::{event_to_ops, FileOp};
+pub use file_op::{event_to_ops, FsEvent};
 pub use filter::PathFilter;
 pub use manager::SyncManager;
 pub use remote::{RemoteFs, RemoteOp};

@@ -1,6 +1,5 @@
-use async_trait::async_trait;
-use std::path::Path;
 use anyhow::Result;
+use async_trait::async_trait;
 
 /// Single remote operation derived from local FS event.
 use std::path::PathBuf;
@@ -9,7 +8,7 @@ use std::path::PathBuf;
 pub enum RemoteOp {
     Upload { local: PathBuf, remote: String },
     Remove { remote: String },
-    MkDir  { remote: String },
+    MkDir { remote: String },
     Rename { from: String, to: String },
 }
 

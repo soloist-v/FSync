@@ -1,6 +1,6 @@
 use crate::{
     config::TaskConfig,
-    file_op::{event_to_ops, FileOp},
+    file_op::{event_to_ops, FsEvent},
     filter::PathFilter,
     remote::{RemoteFs, RemoteOp},
     FoyerStore,
@@ -13,6 +13,7 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 use tokio::sync::watch::Ref;
 use tokio::sync::{mpsc, watch};
 use walkdir::WalkDir;
+use crate::convert::collapse_ops;
 
 /// Public handle returned to callers for controlling a running sync task.
 #[derive(Debug)]
@@ -72,7 +73,7 @@ impl SyncTask {
         mut ctrl_rx: mpsc::Receiver<TaskCommand>,
         state_tx: watch::Sender<TaskState>,
     ) {
-        let (op_tx, mut op_rx) = mpsc::channel::<FileOp>(1024);
+        let (op_tx, mut op_rx) = mpsc::channel::<FsEvent>(1024);
         // open or create cache dir
         let cache_dir = PathBuf::from(format!("cache/{}", self.cfg.id));
         let store = match FoyerStore::open(1024 * 1024 * 4, &cache_dir).await {
@@ -85,7 +86,7 @@ impl SyncTask {
 
         // Initial incremental sync before watching
         {
-            let mut initial_ops: Vec<FileOp> = Vec::new();
+            let mut initial_ops: Vec<FsEvent> = Vec::new();
             for entry in WalkDir::new(&self.cfg.local)
                 .into_iter()
                 .filter_map(|e| e.ok())
@@ -93,7 +94,7 @@ impl SyncTask {
                 if entry.file_type().is_file() {
                     let path = entry.into_path();
                     if self.filter.check(&path) {
-                        initial_ops.push(FileOp::Modify(path));
+                        initial_ops.push(FsEvent::Modify(path));
                     }
                 }
             }
@@ -121,7 +122,7 @@ impl SyncTask {
                     if entry.file_type().is_file() {
                         let path = entry.into_path();
                         if filter_clone.check(&path) {
-                            let _ = scan_tx.try_send(FileOp::Modify(path));
+                            let _ = scan_tx.try_send(FsEvent::Modify(path));
                         }
                     }
                 }
@@ -132,7 +133,7 @@ impl SyncTask {
         // batching variables
         use tokio::time::{sleep, Sleep};
         let debounce = Duration::from_millis(150);
-        let mut batch: Vec<FileOp> = Vec::new();
+        let mut batch: Vec<FsEvent> = Vec::new();
         let mut sleeper: Option<std::pin::Pin<Box<Sleep>>> = None;
         loop {
             tokio::select! {
@@ -145,9 +146,9 @@ impl SyncTask {
                 }
                 Some(op) = op_rx.recv() => {
                     batch.push(op);
-                    if sleeper.is_none() {
-                        sleeper = Some(Box::pin(sleep(debounce)));
-                    }
+                    // if sleeper.is_none() {
+                    sleeper = Some(Box::pin(sleep(debounce)));
+                    // }
                 }
                 _ = async { if let Some(ref mut s) = sleeper { s.as_mut().await } }, if sleeper.is_some() => {
                     if let Err(e) = self.flush_batch(&remote, std::mem::take(&mut batch), &store).await {
@@ -166,18 +167,14 @@ impl SyncTask {
     async fn flush_batch(
         &self,
         remote: &impl RemoteFs,
-        ops: Vec<FileOp>,
+        ops: Vec<FsEvent>,
         store: &FoyerStore,
     ) -> Result<()> {
         if ops.is_empty() {
             return Ok(());
         }
-        // dedup last op per path
-        let mut map: indexmap::IndexMap<PathBuf, FileOp> = indexmap::IndexMap::new();
-        for op in ops {
-            let key = op.path().to_path_buf();
-            map.insert(key, op);
-        }
+        // collapse only consecutive Modify operations for the same path; keep order for others
+        let ops = collapse_ops(ops);
         let mut remote_ops = Vec::new();
         // Gather the timestamps of the updated files
         let mut ts_updates = Vec::new();
@@ -189,9 +186,9 @@ impl SyncTask {
                 .to_string();
             s.replace('\\', "/")
         };
-        for (_, op) in map {
+        for op in ops {
             match &op {
-                FileOp::Create(p) | FileOp::Modify(p) => {
+                FsEvent::Create(p) | FsEvent::Modify(p) => {
                     // size filter and mtime compare
                     if let Ok(meta) = tokio::fs::metadata(p).await {
                         if let (Some(min), Some(sz)) = (self.size_min, Some(meta.len())) {
@@ -222,23 +219,30 @@ impl SyncTask {
                         }
                     }
                 }
-                FileOp::Remove(p) => {
+                FsEvent::Remove(p) => {
                     remote_ops.push(RemoteOp::Remove {
                         remote: remote_path(p),
                     });
                     ts_updates.push((p.clone(), 0));
                 }
-                FileOp::MkDir(p) => {
+                FsEvent::MkDir(p) => {
                     remote_ops.push(RemoteOp::MkDir {
                         remote: remote_path(p),
                     });
                 }
-                FileOp::Rename(from, to) => {
+                FsEvent::Rename(from, to) => {
                     remote_ops.push(RemoteOp::Rename {
                         from: remote_path(from),
                         to: remote_path(to),
                     });
-                    ts_updates.push((to.clone(), 0));
+                    // Inherit timestamp from source to avoid unnecessary upload on pure rename
+                    let from_key = from.to_string_lossy().to_string();
+                    let last = store.get_u64(&from_key).await?;
+                    if let Some(ts) = last {
+                        ts_updates.push((to.clone(), ts));
+                    }
+                    // Clear the source path record
+                    ts_updates.push((from.clone(), 0));
                 }
             }
         }
@@ -267,16 +271,18 @@ impl SyncTask {
         Ok(())
     }
 
-    fn spawn_watcher(&self, op_tx: mpsc::Sender<FileOp>) -> Result<Option<impl FnOnce()>> {
+    fn spawn_watcher(&self, op_tx: mpsc::Sender<FsEvent>) -> Result<Option<impl FnOnce()>> {
         let path = self.cfg.local.clone();
         let filter = self.filter.clone();
         let mut watcher: RecommendedWatcher = RecommendedWatcher::new(
             move |res| match res {
                 Ok(event) => {
                     for op in event_to_ops(event) {
-                        if filter.check(op.path()) {
-                            let _ = op_tx.blocking_send(op);
-                        }
+                        let pass = match &op {
+                            FsEvent::Rename(from, to) => filter.check(from) || filter.check(to),
+                            _ => filter.check(op.path()),
+                        };
+                        if pass { let _ = op_tx.blocking_send(op); }
                     }
                 }
                 Err(e) => eprintln!("watch error: {e}"),
@@ -337,4 +343,40 @@ fn parse_size_filter(input: Option<&str>) -> (Option<u64>, Option<u64>) {
         }
     }
     (None, None)
+}
+
+impl SyncTask {
+    // Merge only consecutive Modify ops for the same path, breaking on any
+    // Rename/Remove/Create/MkDir for that path. Keep original order otherwise.
+    fn collapse_ops(&self, ops: Vec<FsEvent>) -> Vec<FsEvent> {
+        let mut out: Vec<FsEvent> = Vec::with_capacity(ops.len());
+        let mut last_modify_idx: HashMap<PathBuf, usize> = HashMap::new();
+
+        for op in ops {
+            match &op {
+                FsEvent::Modify(p) => {
+                    if let Some(&idx) = last_modify_idx.get(p) {
+                        out[idx] = FsEvent::Modify(p.clone());
+                    } else {
+                        last_modify_idx.insert(p.clone(), out.len());
+                        out.push(op);
+                    }
+                }
+                FsEvent::Remove(p) => {
+                    last_modify_idx.remove(p);
+                    out.push(op);
+                }
+                FsEvent::Rename(from, to) => {
+                    last_modify_idx.remove(from);
+                    last_modify_idx.remove(to);
+                    out.push(op);
+                }
+                FsEvent::Create(p) | FsEvent::MkDir(p) => {
+                    last_modify_idx.remove(p);
+                    out.push(op);
+                }
+            }
+        }
+        out
+    }
 }
