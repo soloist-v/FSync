@@ -6,29 +6,44 @@ use anyhow::{anyhow, Result};
 use async_trait::async_trait;
 use fsync_core::{RemoteFs, RemoteOp};
 use russh::client::AuthResult;
+use russh_sftp::client::error::Error as SftpError;
 use russh_sftp::client::SftpSession;
-use russh_sftp::protocol::OpenFlags;
+use russh_sftp::protocol::StatusCode;
 use ssh_client::Client;
+use std::path::Path;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
-use tracing::{error, info};
+use tracing::info;
 
 pub struct SftpRemote {
     sftp: SftpSession,
 }
 
 impl SftpRemote {
-    pub async fn connect(host_with_port: &str, user: &str, password: Option<&str>, allowed_fingerprints: Option<Vec<String>>) -> Result<Self> {
+    pub async fn connect(
+        host_with_port: &str,
+        user: &str,
+        password: Option<&str>,
+        allowed_fingerprints: Option<Vec<String>>,
+    ) -> Result<Self> {
         let (host, port) = match host_with_port.rsplit_once(':') {
             Some((h, p)) => {
-                let port: u16 = p.parse().map_err(|_| anyhow!("invalid port in host: {host_with_port}"))?;
+                let port: u16 = p
+                    .parse()
+                    .map_err(|_| anyhow!("invalid port in host: {host_with_port}"))?;
                 (h.to_string(), port)
             }
             None => (host_with_port.to_string(), 22u16),
         };
 
         let config = russh::client::Config::default();
-        let mut session = russh::client::connect(Arc::new(config), (host.as_str(), port), Client { allowed_fingerprints }).await?;
+        let mut session = russh::client::connect(
+            Arc::new(config),
+            (host.as_str(), port),
+            Client {
+                allowed_fingerprints,
+            },
+        )
+        .await?;
         let res = session
             .authenticate_password(user, password.unwrap_or(""))
             .await?;
@@ -57,37 +72,23 @@ impl RemoteFs for SftpRemote {
         if ops.is_empty() {
             return Ok(());
         }
-        // Improved batching: execute independent file uploads concurrently with bounded concurrency;
-        // directory create/remove/rename kept sequential to preserve order.
-        use futures::stream::{self, StreamExt};
-        const MAX_CONCURRENCY: usize = 4;
-        let mut seq_ops = Vec::new();
-        let mut uploads = Vec::new();
+
         for op in ops {
             match op {
-                RemoteOp::Upload { local, remote } => uploads.push((local, remote)),
-                other => seq_ops.push(other),
-            }
-        }
-        // Run uploads concurrently
-        stream::iter(uploads)
-            .map(|(local, remote)| async move {
-                let mut reader = tokio::fs::File::open(local).await?;
-                let mut remote_file = self.sftp.create(remote).await?;
-                tokio::io::copy(&mut reader, &mut remote_file).await?;
-                Result::<()>::Ok(())
-            })
-            .buffer_unordered(MAX_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await
-            .into_iter()
-            .collect::<Result<Vec<_>, _>>()?;
-        // Apply sequential ops
-        for op in seq_ops {
-            match op {
-                RemoteOp::Upload { .. } => unreachable!(),
+                RemoteOp::Upload { local, remote } => {
+                    if let Some(parent) = remote_parent(&remote) {
+                        create_dir_all(&self.sftp, parent).await?;
+                    }
+                    let mut reader = tokio::fs::File::open(local).await?;
+                    let mut remote_file = self.sftp.create(remote).await?;
+                    tokio::io::copy(&mut reader, &mut remote_file).await?;
+                }
                 RemoteOp::Remove { remote } => {
-                    let metadata = self.sftp.metadata(remote.as_str()).await?;
+                    let metadata = match self.sftp.metadata(remote.as_str()).await {
+                        Ok(metadata) => metadata,
+                        Err(e) if is_no_such_file(&e) => continue,
+                        Err(e) => return Err(e.into()),
+                    };
                     if metadata.is_dir() {
                         remove_dir_all(&self.sftp, &remote).await?;
                     } else {
@@ -98,7 +99,14 @@ impl RemoteFs for SftpRemote {
                     create_dir_all(&self.sftp, &remote).await?;
                 }
                 RemoteOp::Rename { from, to } => {
-                    let _ = self.sftp.rename(from, to).await;
+                    if let Some(parent) = remote_parent(&to) {
+                        create_dir_all(&self.sftp, parent).await?;
+                    }
+                    if let Err(e) = self.sftp.rename(from, to).await {
+                        if !is_no_such_file(&e) {
+                            return Err(e.into());
+                        }
+                    }
                 }
             }
         }
@@ -109,4 +117,21 @@ impl RemoteFs for SftpRemote {
         let _ = self.sftp.metadata(".").await?;
         Ok(())
     }
+}
+
+fn remote_parent(remote: &str) -> Option<String> {
+    let parent = Path::new(remote).parent()?;
+    let parent = parent.to_string_lossy().replace('\\', "/");
+    if parent.is_empty() || parent == "." {
+        None
+    } else {
+        Some(parent)
+    }
+}
+
+fn is_no_such_file(error: &SftpError) -> bool {
+    matches!(
+        error,
+        SftpError::Status(status) if status.status_code == StatusCode::NoSuchFile
+    )
 }

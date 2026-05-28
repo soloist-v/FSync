@@ -1,7 +1,7 @@
 use russh::client::{Handler, Session};
-use russh::ChannelId;
 use russh::keys::PublicKeyBase64;
-use tracing::info;
+use russh::ChannelId;
+use tracing::{info, trace};
 pub(crate) struct Client {
     pub allowed_fingerprints: Option<Vec<String>>, // OpenSSH SHA256 base64 or raw base64 keys
 }
@@ -15,7 +15,9 @@ impl Handler for Client {
     ) -> Result<bool, Self::Error> {
         if let Some(allowed) = &self.allowed_fingerprints {
             // Russh provides SHA256 fingerprint (OpenSSH style) and base64 public key
-            let fp_sha256 = server_public_key.fingerprint(russh::keys::HashAlg::Sha256).to_string();
+            let fp_sha256 = server_public_key
+                .fingerprint(russh::keys::HashAlg::Sha256)
+                .to_string();
             let key_b64 = server_public_key.public_key_base64();
             let ok = allowed.iter().any(|s| s == &fp_sha256 || s == &key_b64);
             info!("server key fp sha256: {}", fp_sha256);
@@ -31,7 +33,7 @@ impl Handler for Client {
         data: &[u8],
         _session: &mut Session,
     ) -> Result<(), Self::Error> {
-        info!("data on channel {:?}: {}", channel, data.len());
+        trace!("data on channel {:?}: {}", channel, data.len());
         Ok(())
     }
 }

@@ -1,0 +1,22 @@
+[package]
+name = "fsync-ui-slint"
+version = "0.1.0"
+edition = "2021"
+build = "build.rs"
+
+[dependencies]
+anyhow = "1.0"
+fsync-core = { path = "../fsync-core" }
+fsync-remote-sftp = { path = "../fsync-remote-sftp" }
+icu_provider = { version = "2.2", default-features = false, features = ["logging"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_yaml = "0.9"
+slint = "1.16"
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+tokio = { version = "1.28", features = ["full"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+uuid = { version = "1.17", features = ["v4", "serde"] }
+
+[build-dependencies]
+slint-build = "1.16.1"

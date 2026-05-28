@@ -1,6 +1,6 @@
 use anyhow::{anyhow, Result};
 use clap::Parser;
-use fsync_core::{spawn_task, TaskConfig, RemoteCfg, SyncManager};
+use fsync_core::{spawn_task, RemoteCfg, SyncManager, TaskConfig};
 use fsync_remote_sftp::SftpRemote;
 use std::{fs, path::Path, sync::Arc};
 
@@ -20,7 +20,10 @@ async fn main() -> Result<()> {
         .map_err(|e| anyhow!("read config {} failed: {e}", cli.config))?;
 
     // Detect format by extension
-    let ext = Path::new(&cli.config).extension().and_then(|s| s.to_str()).unwrap_or("");
+    let ext = Path::new(&cli.config)
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("");
     let tasks: Vec<TaskConfig> = match ext {
         "json" => serde_json::from_str(&text)?,
         "yaml" | "yml" => serde_yaml::from_str(&text)?,
@@ -35,8 +38,16 @@ async fn main() -> Result<()> {
     let manager = SyncManager::new();
     for cfg in tasks {
         match &cfg.remote_cfg {
-            RemoteCfg::Sftp { host, user, password, key: _, fingerprints } => {
-                let remote = SftpRemote::connect(host, user, password.as_deref(), fingerprints.clone()).await?;
+            RemoteCfg::Sftp {
+                host,
+                user,
+                password,
+                key: _,
+                fingerprints,
+            } => {
+                let remote =
+                    SftpRemote::connect(host, user, password.as_deref(), fingerprints.clone())
+                        .await?;
                 spawn_task(cfg.clone(), remote);
             }
         }

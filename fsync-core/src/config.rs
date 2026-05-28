@@ -24,30 +24,43 @@ pub enum RemoteCfg {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TaskConfig {
-    pub id:        Uuid,
-    pub name:      String,
-    pub local:     PathBuf,
-    pub remote:    String,
+    pub id: Uuid,
+    pub name: String,
+    pub local: PathBuf,
+    pub remote: String,
     #[serde(default)]
-    pub include:   Vec<Pattern>,
+    pub cache_dir: Option<PathBuf>,
     #[serde(default)]
-    pub exclude:   Vec<Pattern>,
+    pub include: Vec<Pattern>,
+    #[serde(default)]
+    pub exclude: Vec<Pattern>,
     #[serde(default = "TaskConfig::default_scan_ms")]
-    pub scan_ms:   u64,
+    pub scan_ms: u64,
     /// Optional size filter in the form of "..", "..n", "n..", or "m..n" (bytes)
     #[serde(default)]
-    pub size:      Option<String>,
+    pub size: Option<String>,
     /// Max retry attempts for remote operations
     #[serde(default = "TaskConfig::default_retry_max")]
     pub retry_max: u32,
     /// Initial backoff in ms for retries (exponential)
     #[serde(default = "TaskConfig::default_retry_backoff_ms")]
     pub retry_backoff_ms: u64,
+    #[serde(default = "TaskConfig::default_debounce_ms")]
+    pub debounce_ms: u64,
     pub remote_cfg: RemoteCfg,
 }
 
 impl TaskConfig {
-    fn default_scan_ms() -> u64 { 300 }
-    fn default_retry_max() -> u32 { 3 }
-    fn default_retry_backoff_ms() -> u64 { 500 }
+    fn default_debounce_ms() -> u64 {
+        150
+    }
+    fn default_scan_ms() -> u64 {
+        300
+    }
+    fn default_retry_max() -> u32 {
+        3
+    }
+    fn default_retry_backoff_ms() -> u64 {
+        500
+    }
 }

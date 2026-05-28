@@ -1,0 +1,565 @@
+import { Button, LineEdit, ScrollView } from "std-widgets.slint";
+
+export struct TaskItem {
+    name: string,
+    local: string,
+    remote: string,
+    status: string,
+    selected: bool,
+    running: bool,
+    starting: bool,
+}
+
+component SummaryCell inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+
+    width: 318px;
+    height: 58px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #e2e8f0;
+    background: #f8fafc;
+
+    VerticalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        padding-top: 8px;
+        padding-bottom: 8px;
+        spacing: 3px;
+
+        Text {
+            text: root.label;
+            font-size: 11px;
+            color: #64748b;
+            overflow: elide;
+        }
+        Text {
+            text: root.value == "" ? "-" : root.value;
+            font-size: 12px;
+            color: #0f172a;
+            overflow: elide;
+        }
+    }
+}
+
+component TabButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> active;
+    callback clicked();
+
+    width: 318px;
+    height: 34px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: active ? #bfdbfe : #e2e8f0;
+    background: active ? #eff6ff : #ffffff;
+
+    Text {
+        text: root.label;
+        color: root.active ? #1d4ed8 : #334155;
+        font-size: 13px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+        width: parent.width;
+        height: parent.height;
+    }
+
+    Rectangle {
+        x: 10px;
+        y: parent.height - 3px;
+        width: parent.width - 20px;
+        height: 3px;
+        border-radius: 2px;
+        background: root.active ? #2563eb : transparent;
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
+component IconButton inherits Rectangle {
+    in property <image> icon;
+    callback clicked();
+
+    width: 34px;
+    height: 32px;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #e2e8f0;
+    background: #ffffff;
+
+    Image {
+        source: root.icon;
+        x: 7px;
+        y: 6px;
+        width: 20px;
+        height: 20px;
+    }
+
+    TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
+component MenuRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    callback clicked();
+
+    height: 28px;
+    border-radius: 4px;
+    background: touch.has-hover ? (danger ? #fef2f2 : #eff6ff) : #ffffff;
+
+    Text {
+        x: 10px;
+        y: 0px;
+        width: parent.width - 20px;
+        height: parent.height;
+        text: root.label;
+        font-size: 12px;
+        color: root.danger ? #b91c1c : #0f172a;
+        vertical-alignment: center;
+        overflow: elide;
+    }
+
+    touch := TouchArea {
+        width: parent.width;
+        height: parent.height;
+        clicked => { root.clicked(); }
+    }
+}
+
+component TaskCard inherits Rectangle {
+    in property <TaskItem> task;
+    in property <int> index;
+    callback selected(int);
+    callback toggle(int);
+    callback duplicate(int);
+    callback delete(int);
+    callback open-local(int);
+    callback menu-action(int, string);
+    callback context-request(int);
+
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: task.selected ? #3b82f6 : #e2e8f0;
+    background: task.selected ? #eff6ff : #f8fafc;
+    width: 334px;
+    height: 48px;
+
+    Rectangle {
+        x: 8px;
+        y: 7px;
+        width: 248px;
+        height: 34px;
+        background: transparent;
+
+            Text {
+                x: 16px;
+                y: 8px;
+                width: 86px;
+                height: 18px;
+                text: root.task.status;
+                font-size: 11px;
+                color: #334155;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+            Rectangle {
+                x: 0px;
+                y: 13px;
+                width: 7px;
+                height: 7px;
+                border-radius: 4px;
+                background: root.task.running ? #16a34a : root.task.starting ? #c68f1f : #64748b;
+            }
+            Text {
+                x: 112px;
+                y: 7px;
+                width: 132px;
+                height: 20px;
+                text: root.task.name;
+                font-size: 14px;
+                color: #0f172a;
+                overflow: elide;
+                vertical-alignment: center;
+            }
+
+        TouchArea {
+            width: parent.width;
+            height: parent.height;
+            clicked => { root.selected(root.index); }
+            pointer-event(event) => {
+                if event.button == PointerEventButton.right && event.kind == PointerEventKind.down {
+                    root.selected(root.index);
+                    root.context-request(root.index);
+                }
+            }
+        }
+    }
+
+    Button {
+        x: 264px;
+        y: 7px;
+        width: 62px;
+        height: 34px;
+        text: root.task.running || root.task.starting ? "Stop" : "Start";
+        clicked => { root.toggle(root.index); }
+    }
+}
+
+export component MainWindow inherits Window {
+    width: 1120px;
+    height: 760px;
+    title: "FSync";
+
+    in property <[TaskItem]> tasks;
+    in property <[string]> logs;
+    in property <int> selected-index: -1;
+    in property <bool> logs-tab: true;
+    in property <string> toast;
+    in-out property <bool> task-menu-open: false;
+    in-out property <int> task-menu-index: -1;
+
+    in-out property <string> draft-id;
+    in-out property <string> draft-name;
+    in-out property <string> draft-local;
+    in-out property <string> draft-remote;
+    in-out property <string> draft-cache-dir;
+    in-out property <string> draft-host;
+    in-out property <string> draft-user;
+    in-out property <string> draft-password;
+    in-out property <string> draft-include;
+    in-out property <string> draft-exclude;
+    in-out property <string> draft-size;
+    in-out property <string> draft-scan-ms;
+    in-out property <string> draft-debounce-ms;
+    in-out property <string> draft-retry-max;
+    in-out property <string> draft-retry-backoff-ms;
+
+    callback reload-config();
+    callback save-config();
+    callback new-task();
+    callback duplicate-task(int);
+    callback delete-task(int);
+    callback start-all();
+    callback stop-all();
+    callback select-task(int);
+    callback edit-task(int);
+    callback toggle-task(int);
+    callback open-local(int);
+    callback task-menu-action(int, string);
+    callback apply-draft();
+    callback show-config();
+    callback show-logs();
+
+    Rectangle {
+        background: #f1f5f9;
+        width: parent.width;
+        height: parent.height;
+
+        VerticalLayout {
+            padding: 18px;
+            spacing: 16px;
+
+            HorizontalLayout {
+                spacing: 16px;
+
+                Rectangle {
+                    width: 380px;
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #e2e8f0;
+                    background: white;
+
+                    VerticalLayout {
+                        padding: 14px;
+                        spacing: 10px;
+
+                        HorizontalLayout {
+                            Text { text: "Tasks"; font-size: 18px; color: #0f172a; }
+                            IconButton { icon: @image-url("reload.svg"); clicked => { root.reload-config(); } }
+                            Button { text: "New"; clicked => { root.new-task(); } }
+                        }
+
+                        HorizontalLayout {
+                            Button { text: "Start All"; clicked => { root.start-all(); } }
+                            Button { text: "Stop All"; clicked => { root.stop-all(); } }
+                        }
+
+                        ScrollView {
+                            viewport-width: 334px;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                            VerticalLayout {
+                                spacing: 8px;
+
+                                if root.tasks.length == 0 : Rectangle {
+                                    height: 120px;
+                                    border-radius: 8px;
+                                    border-width: 1px;
+                                    border-color: #cbd5e1;
+                                    background: #f8fafc;
+                                    VerticalLayout {
+                                        padding: 16px;
+                                        spacing: 10px;
+                                        Text { text: "No sync tasks"; font-size: 18px; color: #0f172a; }
+                                        Text { text: "Create a task to configure local and remote paths."; font-size: 12px; color: #64748b; }
+                                    }
+                                }
+
+                                for task[index] in root.tasks : TaskCard {
+                                    task: task;
+                                    index: index;
+                                    selected(index) => { root.select-task(index); }
+                                    toggle(index) => { root.toggle-task(index); }
+                                    duplicate(index) => { root.duplicate-task(index); }
+                                    delete(index) => { root.delete-task(index); }
+                                    open-local(index) => { root.open-local(index); }
+                                    menu-action(index, action) => { root.task-menu-action(index, action); }
+                                    context-request(index) => {
+                                        root.task-menu-index = index;
+                                        root.task-menu-open = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.task-menu-open : TouchArea {
+                        x: 0px;
+                        y: 0px;
+                        width: parent.width;
+                        height: parent.height;
+                        clicked => {
+                            root.task-menu-open = false;
+                        }
+                    }
+
+                    if root.task-menu-open && root.task-menu-index >= 0 : Rectangle {
+                        x: 37px;
+                        y: 105px + root.task-menu-index * 56px;
+                        width: 172px;
+                        height: 120px;
+                        border-radius: 7px;
+                        background: #94a3b833;
+                    }
+
+                    if root.task-menu-open && root.task-menu-index >= 0 : Rectangle {
+                        x: 34px;
+                        y: 102px + root.task-menu-index * 56px;
+                        width: 172px;
+                        height: 120px;
+                        border-radius: 6px;
+                        border-width: 1px;
+                        border-color: #94a3b8;
+                        background: #ffffff;
+
+                        VerticalLayout {
+                            padding: 4px;
+                            spacing: 0px;
+
+                            MenuRow {
+                                label: "Open local folder";
+                                clicked => {
+                                    root.task-menu-open = false;
+                                    root.task-menu-action(root.task-menu-index, "open");
+                                }
+                            }
+                            MenuRow {
+                                label: "Duplicate";
+                                clicked => {
+                                    root.task-menu-open = false;
+                                    root.task-menu-action(root.task-menu-index, "duplicate");
+                                }
+                            }
+                            MenuRow {
+                                label: "Delete";
+                                danger: true;
+                                clicked => {
+                                    root.task-menu-open = false;
+                                    root.task-menu-action(root.task-menu-index, "delete");
+                                }
+                            }
+                            MenuRow {
+                                label: "Start / Stop";
+                                clicked => {
+                                    root.task-menu-open = false;
+                                    root.task-menu-action(root.task-menu-index, "toggle");
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Rectangle {
+                    border-radius: 8px;
+                    border-width: 1px;
+                    border-color: #e2e8f0;
+                    background: white;
+
+                    VerticalLayout {
+                        padding: 18px;
+                        spacing: 12px;
+
+                        if root.selected-index < 0 : VerticalLayout {
+                            spacing: 14px;
+                            Text { text: "Ready when you are"; font-size: 24px; color: #0f172a; }
+                            Text { text: "Create or select a task to begin."; font-size: 13px; color: #64748b; }
+                        }
+
+                        if root.selected-index >= 0 : HorizontalLayout {
+                            spacing: 8px;
+                            TabButton {
+                                label: "Dashboard";
+                                active: root.logs-tab;
+                                clicked => { root.show-logs(); }
+                            }
+                            TabButton {
+                                label: "Task Settings";
+                                active: !root.logs-tab;
+                                clicked => { root.show-config(); }
+                            }
+                        }
+
+                        if root.selected-index >= 0 && root.logs-tab : ScrollView {
+                            viewport-width: 644px;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            vertical-scrollbar-policy: ScrollBarPolicy.always-off;
+                            VerticalLayout {
+                                spacing: 10px;
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    SummaryCell { label: "Local"; value: root.draft-local; }
+                                    SummaryCell { label: "Remote"; value: root.draft-remote; }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    SummaryCell { label: "Cache"; value: root.draft-cache-dir; }
+                                    SummaryCell { label: "Task ID"; value: root.draft-id; }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    SummaryCell { label: "Include"; value: root.draft-include; }
+                                    SummaryCell { label: "Exclude"; value: root.draft-exclude; }
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    SummaryCell { label: "Host"; value: root.draft-host; }
+                                    SummaryCell { label: "User"; value: root.draft-user; }
+                                }
+
+                                Text {
+                                    height: 22px;
+                                    text: "Logs";
+                                    font-size: 18px;
+                                    color: #0f172a;
+                                    vertical-alignment: center;
+                                }
+
+                                Rectangle {
+                                    width: 644px;
+                                    height: 340px;
+                                    border-radius: 6px;
+                                    border-width: 1px;
+                                    border-color: #1f2937;
+                                    background: #0f172a;
+
+                                    ScrollView {
+                                        x: 10px;
+                                        y: 8px;
+                                        width: parent.width - 20px;
+                                        height: parent.height - 16px;
+                                        viewport-width: parent.width - 20px;
+                                        horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+
+                                        VerticalLayout {
+                                            spacing: 2px;
+
+                                            if root.logs.length == 0 : Text {
+                                                height: 16px;
+                                                text: "No log entries yet";
+                                                font-family: "Microsoft YaHei UI, Segoe UI";
+                                                font-size: 12px;
+                                                color: #94a3b8;
+                                                wrap: TextWrap.no-wrap;
+                                            }
+
+                                            for line in root.logs : Text {
+                                                height: 16px;
+                                                text: line;
+                                                font-family: "Microsoft YaHei UI, Segoe UI";
+                                                font-size: 12px;
+                                                color: #d1d5db;
+                                                wrap: TextWrap.no-wrap;
+                                                overflow: clip;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.selected-index >= 0 && !root.logs-tab : ScrollView {
+                            viewport-width: 644px;
+                            horizontal-scrollbar-policy: ScrollBarPolicy.always-off;
+                            VerticalLayout {
+                                spacing: 10px;
+                                Text { text: "Task Settings"; font-size: 20px; color: #0f172a; }
+                                Text { text: "Changes are kept in memory until Save Config."; font-size: 12px; color: #64748b; }
+
+                                LineEdit { text <=> root.draft-name; placeholder-text: "Task name"; }
+                                LineEdit { text <=> root.draft-local; placeholder-text: "Local path"; }
+                                LineEdit { text <=> root.draft-remote; placeholder-text: "Remote path"; }
+                                LineEdit { text <=> root.draft-cache-dir; placeholder-text: "Cache directory"; }
+                                LineEdit { text <=> root.draft-host; placeholder-text: "SFTP host"; }
+                                LineEdit { text <=> root.draft-user; placeholder-text: "SFTP user"; }
+                                LineEdit { text <=> root.draft-password; placeholder-text: "SFTP password"; }
+                                LineEdit { text <=> root.draft-include; placeholder-text: "Include globs, separated by ;"; }
+                                LineEdit { text <=> root.draft-exclude; placeholder-text: "Exclude globs, separated by ;"; }
+                                LineEdit { text <=> root.draft-size; placeholder-text: "Size filter"; }
+
+                                HorizontalLayout {
+                                    LineEdit { text <=> root.draft-scan-ms; placeholder-text: "Scan ms"; }
+                                    LineEdit { text <=> root.draft-debounce-ms; placeholder-text: "Debounce ms"; }
+                                    LineEdit { text <=> root.draft-retry-max; placeholder-text: "Retry max"; }
+                                    LineEdit { text <=> root.draft-retry-backoff-ms; placeholder-text: "Retry backoff ms"; }
+                                }
+
+                                HorizontalLayout {
+                                    Button { text: "Apply"; clicked => { root.apply-draft(); } }
+                                    Button { text: "Save Config"; clicked => { root.save-config(); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            if root.toast != "" : Rectangle {
+                height: 42px;
+                border-radius: 8px;
+                border-width: 1px;
+                border-color: #93c5fd;
+                background: #eff6ff;
+                Text {
+                    text: root.toast;
+                    color: #1e40af;
+                    x: 12px;
+                    y: 12px;
+                    font-size: 13px;
+                }
+            }
+        }
+    }
+}

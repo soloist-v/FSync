@@ -4,9 +4,7 @@ use russh_sftp::protocol::{Status, StatusCode};
 use std::path::{Path, PathBuf};
 
 fn to_remote_path<P: AsRef<Path>>(p: P) -> String {
-    p.as_ref()
-        .to_string_lossy()
-        .replace('\\', "/")
+    p.as_ref().to_string_lossy().replace('\\', "/")
 }
 
 /// 异步地递归创建目录及其所有父目录。
@@ -125,7 +123,9 @@ pub async fn remove_dir_all(sftp: &SftpSession, path: impl AsRef<Path>) -> Resul
         }
         Err(e) => {
             if let Error::Status(status) = &e {
-                if status.status_code == StatusCode::NoSuchFile { return Ok(()); }
+                if status.status_code == StatusCode::NoSuchFile {
+                    return Ok(());
+                }
             }
             return Err(e);
         }
@@ -142,14 +142,18 @@ pub async fn remove_dir_all(sftp: &SftpSession, path: impl AsRef<Path>) -> Resul
                 Err(e) => {
                     // 如果目录刚好被删了，忽略
                     if let Error::Status(status) = &e {
-                        if status.status_code == StatusCode::NoSuchFile { continue; }
+                        if status.status_code == StatusCode::NoSuchFile {
+                            continue;
+                        }
                     }
                     return Err(e);
                 }
             };
             for entry in entries {
                 let name = entry.file_name();
-                if name == "." || name == ".." { continue; }
+                if name == "." || name == ".." {
+                    continue;
+                }
                 let child = dir.join(name);
                 if entry.metadata().is_dir() {
                     stack.push((child, false));

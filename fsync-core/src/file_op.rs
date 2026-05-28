@@ -40,6 +40,15 @@ pub fn event_to_ops(event: notify::Event) -> Vec<FsEvent> {
                 ops.push(FsEvent::Create(p));
             }
         }
+        EventKind::Create(CreateKind::Any) => {
+            for p in event.paths {
+                if p.is_dir() {
+                    ops.push(FsEvent::MkDir(p));
+                } else {
+                    ops.push(FsEvent::Create(p));
+                }
+            }
+        }
         EventKind::Create(CreateKind::Folder) => {
             for p in event.paths {
                 ops.push(FsEvent::MkDir(p));
@@ -58,7 +67,9 @@ pub fn event_to_ops(event: notify::Event) -> Vec<FsEvent> {
                 ops.push(FsEvent::Rename(from, to));
             }
         }
-        EventKind::Remove(RemoveKind::File) | EventKind::Remove(RemoveKind::Folder) => {
+        EventKind::Remove(RemoveKind::File)
+        | EventKind::Remove(RemoveKind::Folder)
+        | EventKind::Remove(RemoveKind::Any) => {
             for p in event.paths {
                 ops.push(FsEvent::Remove(p));
             }
@@ -66,4 +77,35 @@ pub fn event_to_ops(event: notify::Event) -> Vec<FsEvent> {
         _ => {}
     }
     ops
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use notify::{event::CreateKind, Event};
+    use std::{
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn create_any_detects_existing_directory() {
+        let dir = std::env::temp_dir().join(format!(
+            "fsync-file-op-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+
+        let event = Event {
+            kind: EventKind::Create(CreateKind::Any),
+            paths: vec![dir.clone()],
+            attrs: Default::default(),
+        };
+
+        assert_eq!(event_to_ops(event), vec![FsEvent::MkDir(dir.clone())]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }

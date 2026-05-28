@@ -1,1 +1,4 @@
 /target
+Cargo.lock
+data/fsync.db
+data/
