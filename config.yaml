@@ -2,4 +2,4 @@ database_path: data/fsync.db
 cache_dir: data/cache
 theme: null
 font_size: null
-log_dir: null
+log_dir: data/logs

@@ -3,7 +3,7 @@ members = [
     "fsync-core",
     "fsync-remote-sftp",
     "fsync-cli",
-    "fsync-ui-slint",
+    "fsync-ui-egui",
 ]
 
 resolver = "2"
