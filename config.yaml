@@ -1,5 +1,5 @@
 database_path: data/fsync.db
 cache_dir: data/cache
-theme: null
+theme: system
 font_size: null
 log_dir: data/logs

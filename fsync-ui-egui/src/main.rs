@@ -1,7 +1,7 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use anyhow::{anyhow, Result};
-use eframe::egui::{self, FontData, FontDefinitions, FontFamily};
+use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Theme, ThemePreference};
 use fsync_core::{spawn_task, Pattern, RemoteCfg, SyncTaskHandle, TaskConfig, TaskLog, TaskState};
 use fsync_remote_sftp::SftpRemote;
 use serde::{Deserialize, Serialize};
@@ -74,6 +74,14 @@ impl AppConfig {
             .clone()
             .unwrap_or_else(|| PathBuf::from(DEFAULT_LOG_DIR))
     }
+
+    fn theme_mode(&self) -> ThemeMode {
+        ThemeMode::from_config_value(self.theme.as_deref())
+    }
+
+    fn set_theme_mode(&mut self, mode: ThemeMode) {
+        self.theme = Some(mode.as_config_value().to_string());
+    }
 }
 
 struct TaskView {
@@ -116,12 +124,61 @@ enum PanelTab {
     Settings,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum ThemeMode {
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeMode {
+    fn from_config_value(value: Option<&str>) -> Self {
+        match value
+            .unwrap_or("system")
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+
+    fn as_config_value(self) -> &'static str {
+        match self {
+            Self::System => "system",
+            Self::Light => "light",
+            Self::Dark => "dark",
+        }
+    }
+
+    fn as_label(self) -> &'static str {
+        match self {
+            Self::System => "System",
+            Self::Light => "Light",
+            Self::Dark => "Dark",
+        }
+    }
+
+    fn as_preference(self) -> ThemePreference {
+        match self {
+            Self::System => ThemePreference::System,
+            Self::Light => ThemePreference::Light,
+            Self::Dark => ThemePreference::Dark,
+        }
+    }
+}
+
 struct FSyncApp {
     runtime: Arc<Runtime>,
     storage: Arc<AppStorage>,
+    config: AppConfig,
     state: Arc<Mutex<AppState>>,
     draft: Draft,
     tab: PanelTab,
+    theme_mode: ThemeMode,
     toast: Option<(String, Instant)>,
 }
 
@@ -162,15 +219,29 @@ impl FSyncApp {
         state: Arc<Mutex<AppState>>,
     ) -> Self {
         install_chinese_fonts(&cc.egui_ctx);
-        configure_style(&cc.egui_ctx);
+        let config = storage.config.clone();
+        let theme_mode = config.theme_mode();
+        configure_style(&cc.egui_ctx, theme_mode);
         let draft = selected_draft(&state).unwrap_or_default();
         Self {
             runtime,
             storage,
+            config,
             state,
             draft,
             tab: PanelTab::Dashboard,
+            theme_mode,
             toast: None,
+        }
+    }
+
+    fn set_theme_mode(&mut self, ctx: &egui::Context, theme_mode: ThemeMode) {
+        self.theme_mode = theme_mode;
+        self.config.set_theme_mode(theme_mode);
+        configure_style(ctx, theme_mode);
+        match persist_app_config(&self.config) {
+            Ok(()) => self.toast(format!("Theme: {}", theme_mode.as_label())),
+            Err(e) => self.toast(format!("Theme save failed: {e}")),
         }
     }
 
@@ -400,6 +471,7 @@ impl FSyncApp {
     }
 
     fn render_left_panel(&mut self, ui: &mut egui::Ui) {
+        let mut next_theme = None;
         ui.horizontal(|ui| {
             ui.heading("Tasks");
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -416,8 +488,22 @@ impl FSyncApp {
                 {
                     self.reload();
                 }
+                ui.menu_button(self.theme_mode.as_label(), |ui| {
+                    for mode in [ThemeMode::System, ThemeMode::Light, ThemeMode::Dark] {
+                        if ui
+                            .selectable_label(self.theme_mode == mode, mode.as_label())
+                            .clicked()
+                        {
+                            next_theme = Some(mode);
+                            ui.close();
+                        }
+                    }
+                });
             });
         });
+        if let Some(mode) = next_theme {
+            self.set_theme_mode(ui.ctx(), mode);
+        }
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui
@@ -451,7 +537,8 @@ impl FSyncApp {
                         task.cfg.name.clone(),
                         state_label(&task.state),
                         task.handle.is_some() || task.starting,
-                        status_color(&task.state, task.starting),
+                        task.state.clone(),
+                        task.starting,
                     )
                 })
                 .collect::<Vec<_>>()
@@ -468,24 +555,14 @@ impl FSyncApp {
             .id_salt("tasks_list_scroll")
             .auto_shrink([false, false])
             .show(ui, |ui| {
-                for (idx, selected, name, status, running, color) in rows {
+                for (idx, _selected, name, status, running, state, starting) in rows {
                     let mut toggle_clicked = false;
                     let row_width = ui.available_width();
                     let row = ui.allocate_ui_with_layout(
                         egui::vec2(row_width, 40.0),
                         egui::Layout::top_down(egui::Align::Min),
                         |ui| {
-                            egui::Frame::new()
-                                .fill(if selected {
-                                    egui::Color32::from_rgb(239, 246, 255)
-                                } else {
-                                    egui::Color32::WHITE
-                                })
-                                .stroke(if selected {
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(59, 130, 246))
-                                } else {
-                                    egui::Stroke::new(1.0, egui::Color32::from_rgb(218, 226, 236))
-                                })
+                            egui::Frame::group(ui.style())
                                 .corner_radius(6.0)
                                 .inner_margin(egui::Margin::symmetric(10, 8))
                                 .show(ui, |ui| {
@@ -494,7 +571,7 @@ impl FSyncApp {
 
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x = 8.0;
-                                        status_dot(ui, color, &status);
+                                        status_dot(ui, status_color(ui, &state, starting), &status);
                                         ui.label(egui::RichText::new(name).strong().size(14.0));
                                         let spacer = (ui.available_width() - button_width).max(0.0);
                                         if spacer > 0.0 {
@@ -556,8 +633,8 @@ impl FSyncApp {
         }
 
         ui.horizontal(|ui| {
-            tab_button(ui, &mut self.tab, PanelTab::Dashboard, "Dashboard");
-            tab_button(ui, &mut self.tab, PanelTab::Settings, "Task Settings");
+            ui.selectable_value(&mut self.tab, PanelTab::Dashboard, "Dashboard");
+            ui.selectable_value(&mut self.tab, PanelTab::Settings, "Task Settings");
         });
         ui.separator();
 
@@ -604,7 +681,6 @@ impl FSyncApp {
         ui.add_space(4.0);
         let height = (ui.available_height() - 4.0).max(180.0);
         egui::Frame::new()
-            .fill(egui::Color32::from_rgb(15, 23, 42))
             .corner_radius(6.0)
             .inner_margin(egui::Margin::same(10))
             .show(ui, |ui| {
@@ -615,16 +691,11 @@ impl FSyncApp {
                     .auto_shrink([false, false])
                     .show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                        let text_color = egui::Color32::from_rgb(226, 232, 240);
                         if logs.is_empty() {
-                            ui.label(
-                                egui::RichText::new("No log entries yet")
-                                    .monospace()
-                                    .color(egui::Color32::from_rgb(148, 163, 184)),
-                            );
+                            ui.label(egui::RichText::new("No log entries yet").monospace().weak());
                         } else {
                             for log in logs {
-                                ui.label(egui::RichText::new(log).monospace().color(text_color));
+                                ui.label(egui::RichText::new(log).monospace());
                             }
                         }
                     });
@@ -716,54 +787,51 @@ impl eframe::App for FSyncApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         let root_size = ui.available_size();
-        egui::Frame::new()
-            .fill(egui::Color32::from_rgb(243, 246, 251))
-            .show(ui, |ui| {
-                ui.set_min_size(root_size);
-                let full_size = ui.available_size();
-                let left_width = 380.0;
-                let gap = 10.0;
-                let right_width = (full_size.x - left_width - gap).max(320.0);
-                let panel_height = full_size.y;
+        egui::Frame::central_panel(ui.style()).show(ui, |ui| {
+            ui.set_min_size(root_size);
+            let full_size = ui.available_size();
+            let left_width = 380.0;
+            let gap = 10.0;
+            let right_width = (full_size.x - left_width - gap).max(320.0);
+            let panel_height = full_size.y;
 
-                ui.horizontal_top(|ui| {
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(left_width, panel_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            panel_frame().show(ui, |ui| {
-                                ui.set_min_height((panel_height - 32.0).max(0.0));
-                                self.render_left_panel(ui);
-                            });
-                        },
-                    );
+            ui.horizontal_top(|ui| {
+                ui.allocate_ui_with_layout(
+                    egui::vec2(left_width, panel_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        panel_frame(ui).show(ui, |ui| {
+                            ui.set_min_height((panel_height - 32.0).max(0.0));
+                            self.render_left_panel(ui);
+                        });
+                    },
+                );
 
-                    ui.add_space(gap);
+                ui.add_space(gap);
 
-                    ui.allocate_ui_with_layout(
-                        egui::vec2(right_width, panel_height),
-                        egui::Layout::top_down(egui::Align::Min),
-                        |ui| {
-                            panel_frame().show(ui, |ui| {
-                                ui.set_min_height((panel_height - 32.0).max(0.0));
-                                self.render_right_panel(ui);
-                            });
-                        },
-                    );
-                });
+                ui.allocate_ui_with_layout(
+                    egui::vec2(right_width, panel_height),
+                    egui::Layout::top_down(egui::Align::Min),
+                    |ui| {
+                        panel_frame(ui).show(ui, |ui| {
+                            ui.set_min_height((panel_height - 32.0).max(0.0));
+                            self.render_right_panel(ui);
+                        });
+                    },
+                );
             });
+        });
 
         if let Some((message, created_at)) = &self.toast {
             if created_at.elapsed() < Duration::from_secs(4) {
                 egui::Area::new("toast".into())
                     .anchor(egui::Align2::RIGHT_BOTTOM, [-18.0, -18.0])
                     .show(&ctx, |ui| {
-                        egui::Frame::new()
-                            .fill(egui::Color32::from_rgb(30, 41, 59))
+                        egui::Frame::popup(ui.style())
                             .corner_radius(6.0)
                             .inner_margin(egui::Margin::symmetric(12, 8))
                             .show(ui, |ui| {
-                                ui.label(egui::RichText::new(message).color(egui::Color32::WHITE));
+                                ui.label(message);
                             });
                     });
             }
@@ -820,25 +888,17 @@ async fn start_remote_task(cfg: TaskConfig) -> Result<SyncTaskHandle, String> {
     }
 }
 
-fn configure_style(ctx: &egui::Context) {
-    let mut visuals = egui::Visuals::light();
-    visuals.panel_fill = egui::Color32::from_rgb(245, 247, 250);
-    visuals.window_fill = egui::Color32::WHITE;
-    visuals.widgets.inactive.bg_fill = egui::Color32::WHITE;
-    visuals.widgets.inactive.bg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(203, 213, 225));
-    visuals.widgets.hovered.bg_fill = egui::Color32::from_rgb(245, 248, 252);
-    visuals.widgets.hovered.bg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(148, 163, 184));
-    visuals.widgets.active.bg_fill = egui::Color32::from_rgb(237, 242, 247);
-    visuals.widgets.active.bg_stroke =
-        egui::Stroke::new(1.0, egui::Color32::from_rgb(96, 165, 250));
-    ctx.set_visuals(visuals);
+fn configure_style(ctx: &egui::Context, theme_mode: ThemeMode) {
+    ctx.options_mut(|opt| {
+        opt.theme_preference = theme_mode.as_preference();
+    });
 
-    let mut style = (*ctx.global_style()).clone();
-    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
-    style.spacing.button_padding = egui::vec2(10.0, 5.0);
-    ctx.set_global_style(style);
+    for theme in [Theme::Light, Theme::Dark] {
+        ctx.style_mut_of(theme, |style| {
+            style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+            style.spacing.button_padding = egui::vec2(10.0, 5.0);
+        });
+    }
 }
 
 fn install_chinese_fonts(ctx: &egui::Context) {
@@ -871,54 +931,32 @@ fn install_chinese_fonts(ctx: &egui::Context) {
     ctx.set_fonts(fonts);
 }
 
-fn panel_frame() -> egui::Frame {
-    egui::Frame::new()
-        .fill(egui::Color32::WHITE)
-        .stroke(egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgb(226, 232, 240),
-        ))
+fn panel_frame(ui: &egui::Ui) -> egui::Frame {
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().window_fill())
         .inner_margin(egui::Margin::same(12))
         .outer_margin(egui::Margin::same(8))
         .corner_radius(8.0)
 }
 
 fn info_tile(ui: &mut egui::Ui, label: &str, value: &str) {
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgb(250, 251, 253))
-        .stroke(egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgb(218, 226, 236),
-        ))
-        .corner_radius(6.0)
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_min_height(44.0);
-            ui.label(
-                egui::RichText::new(label)
-                    .small()
-                    .color(egui::Color32::from_rgb(71, 99, 132)),
-            );
+            ui.label(egui::RichText::new(label).small().weak());
             ui.label(value);
         });
 }
 
 fn edit_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgb(250, 251, 253))
-        .stroke(egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgb(218, 226, 236),
-        ))
-        .corner_radius(6.0)
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_min_height(58.0);
-            ui.label(
-                egui::RichText::new(label)
-                    .small()
-                    .color(egui::Color32::from_rgb(71, 99, 132)),
-            );
+            ui.label(egui::RichText::new(label).small().weak());
             ui.add_sized(
                 [ui.available_width(), 28.0],
                 egui::TextEdit::singleline(value),
@@ -927,41 +965,17 @@ fn edit_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
 }
 
 fn edit_password(ui: &mut egui::Ui, label: &str, value: &mut String) {
-    egui::Frame::new()
-        .fill(egui::Color32::from_rgb(250, 251, 253))
-        .stroke(egui::Stroke::new(
-            1.0,
-            egui::Color32::from_rgb(218, 226, 236),
-        ))
-        .corner_radius(6.0)
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
         .inner_margin(egui::Margin::symmetric(10, 7))
         .show(ui, |ui| {
             ui.set_min_height(58.0);
-            ui.label(
-                egui::RichText::new(label)
-                    .small()
-                    .color(egui::Color32::from_rgb(71, 99, 132)),
-            );
+            ui.label(egui::RichText::new(label).small().weak());
             ui.add_sized(
                 [ui.available_width(), 28.0],
                 egui::TextEdit::singleline(value).password(true),
             );
         });
-}
-
-fn tab_button(ui: &mut egui::Ui, current: &mut PanelTab, tab: PanelTab, label: &str) {
-    let selected = *current == tab;
-    let response = ui.add_sized(
-        [116.0, 26.0],
-        egui::Button::new(label).fill(if selected {
-            egui::Color32::from_rgb(229, 239, 255)
-        } else {
-            egui::Color32::WHITE
-        }),
-    );
-    if response.clicked() {
-        *current = tab;
-    }
 }
 
 fn status_dot(ui: &mut egui::Ui, color: egui::Color32, hover_text: &str) {
@@ -970,15 +984,16 @@ fn status_dot(ui: &mut egui::Ui, color: egui::Color32, hover_text: &str) {
     response.on_hover_text(hover_text);
 }
 
-fn status_color(state: &TaskState, starting: bool) -> egui::Color32 {
+fn status_color(ui: &egui::Ui, state: &TaskState, starting: bool) -> egui::Color32 {
+    let visuals = ui.visuals();
     if starting || matches!(state, TaskState::Starting(_)) {
-        egui::Color32::from_rgb(217, 119, 6)
+        visuals.warn_fg_color
     } else {
         match state {
-            TaskState::Idle => egui::Color32::from_rgb(100, 116, 139),
-            TaskState::Starting(_) => egui::Color32::from_rgb(217, 119, 6),
-            TaskState::Running => egui::Color32::from_rgb(22, 163, 74),
-            TaskState::Error(_) => egui::Color32::from_rgb(220, 38, 38),
+            TaskState::Idle => visuals.widgets.noninteractive.fg_stroke.color,
+            TaskState::Starting(_) => visuals.warn_fg_color,
+            TaskState::Running => visuals.hyperlink_color,
+            TaskState::Error(_) => visuals.error_fg_color,
         }
     }
 }
@@ -1006,13 +1021,18 @@ fn load_app_config() -> Result<AppConfig> {
     let Ok(text) = fs::read_to_string(CONFIG_PATH) else {
         let mut config = AppConfig::default();
         config.normalize();
-        fs::write(CONFIG_PATH, serde_yaml::to_string(&config)?)?;
+        persist_app_config(&config)?;
         return Ok(config);
     };
     let mut config = serde_yaml::from_str::<AppConfig>(&text)?;
     config.normalize();
-    fs::write(CONFIG_PATH, serde_yaml::to_string(&config)?)?;
+    persist_app_config(&config)?;
     Ok(config)
+}
+
+fn persist_app_config(config: &AppConfig) -> Result<()> {
+    fs::write(CONFIG_PATH, serde_yaml::to_string(config)?)?;
+    Ok(())
 }
 
 async fn init_storage(config: AppConfig) -> Result<AppStorage> {
