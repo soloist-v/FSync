@@ -1,6 +1,6 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use eframe::egui::{self, FontData, FontDefinitions, FontFamily, Theme, ThemePreference};
 use fsync_core::{spawn_task, Pattern, RemoteCfg, SyncTaskHandle, TaskConfig, TaskLog, TaskState};
 use fsync_remote_sftp::SftpRemote;
@@ -21,6 +21,7 @@ const CONFIG_PATH: &str = "config.yaml";
 const DEFAULT_DATABASE_PATH: &str = "fsync.db";
 const DEFAULT_CACHE_DIR: &str = "data/cache";
 const DEFAULT_LOG_DIR: &str = "data/logs";
+const APP_ICON_SVG: &str = include_str!("../assets/icon.svg");
 
 #[derive(Clone)]
 struct AppStorage {
@@ -195,12 +196,14 @@ fn run() -> Result<()> {
     let storage = Arc::new(runtime.block_on(init_storage(config))?);
     let state = Arc::new(Mutex::new(AppState::default()));
     load_config(&runtime, &storage, &state)?;
+    let app_icon = load_app_icon()?;
 
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("FSync")
             .with_inner_size([1120.0, 760.0])
-            .with_min_inner_size([900.0, 560.0]),
+            .with_min_inner_size([900.0, 560.0])
+            .with_icon(app_icon),
         ..Default::default()
     };
     eframe::run_native(
@@ -899,6 +902,29 @@ fn configure_style(ctx: &egui::Context, theme_mode: ThemeMode) {
             style.spacing.button_padding = egui::vec2(10.0, 5.0);
         });
     }
+}
+
+fn load_app_icon() -> Result<egui::IconData> {
+    let tree =
+        resvg::usvg::Tree::from_data(APP_ICON_SVG.as_bytes(), &resvg::usvg::Options::default())
+            .context("failed to parse app icon svg")?;
+    let icon_size = 128u32;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(icon_size, icon_size)
+        .context("failed to allocate app icon pixmap")?;
+    let size = tree.size();
+    let scale = (icon_size as f32 / size.width()).min(icon_size as f32 / size.height());
+    let translate_x = (icon_size as f32 - size.width() * scale) * 0.5;
+    let translate_y = (icon_size as f32 - size.height() * scale) * 0.5;
+    let transform = resvg::tiny_skia::Transform::from_scale(scale, scale)
+        .post_translate(translate_x, translate_y);
+
+    resvg::render(&tree, transform, &mut pixmap.as_mut());
+
+    Ok(egui::IconData {
+        rgba: pixmap.take(),
+        width: icon_size,
+        height: icon_size,
+    })
 }
 
 fn install_chinese_fonts(ctx: &egui::Context) {

@@ -9,12 +9,9 @@ tokio-util = { version = "0.7.16", features = ["default"] }
 tracing = "0.1.41"
 async-trait = "0.1"
 notify = "8.2.0"
-indexmap = { version = "2.10.0", features = ["default"] }
 serde = { version = "1.0", features = ["derive"] }
-sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
+sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "sqlite"] }
 uuid = { version = "1", features = ["v4", "serde"] }
-thiserror = "2.0.12"
 anyhow = "1.0"
 globset = "0.4"
 walkdir = "2.4"
-

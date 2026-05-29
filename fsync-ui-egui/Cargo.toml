@@ -2,6 +2,7 @@
 name = "fsync-ui-egui"
 version = "0.1.0"
 edition = "2021"
+build = "build.rs"
 
 [dependencies]
 anyhow = "1.0"
@@ -9,12 +10,18 @@ eframe = "0.34.3"
 egui = "0.34.3"
 fsync-core = { path = "../fsync-core" }
 fsync-remote-sftp = { path = "../fsync-remote-sftp" }
-icu_provider = { version = "2.2", default-features = false, features = ["logging"] }
+resvg = "0.47"
 serde = { version = "1.0", features = ["derive"] }
 serde_yaml = "0.9"
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "sqlite"] }
-tokio = { version = "1.28", features = ["full"] }
+tokio = { version = "1", features = ["full"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "1.17", features = ["v4", "serde"] }
+
+[build-dependencies]
+anyhow = "1.0"
+ico = "0.5"
+resvg = "0.47"
+winresource = "0.1"
