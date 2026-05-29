@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 build = "build.rs"
 
+[[bin]]
+name = "fsync"
+path = "src/main.rs"
+
 [dependencies]
 anyhow = "1.0"
 eframe = "0.34.3"
