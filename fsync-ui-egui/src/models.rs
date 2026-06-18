@@ -7,6 +7,8 @@ use std::sync::{Arc, Mutex};
 use tokio::sync::broadcast;
 use uuid::Uuid;
 
+use crate::operation_logs::OperationLogRecord;
+
 pub(crate) const CONFIG_PATH: &str = "config.yaml";
 pub(crate) const DEFAULT_DATABASE_PATH: &str = "fsync.db";
 pub(crate) const DEFAULT_CACHE_DIR: &str = "data/cache";
@@ -74,6 +76,7 @@ pub(crate) struct TaskView {
     pub(crate) handle: Option<Arc<SyncTaskHandle>>,
     pub(crate) log_rx: Option<broadcast::Receiver<TaskLog>>,
     pub(crate) logs: Vec<String>,
+    pub(crate) last_operation_log_id: i64,
     pub(crate) state: TaskState,
     pub(crate) starting: bool,
 }
@@ -93,6 +96,7 @@ pub(crate) struct RemoteProfile {
 pub(crate) struct LoadedTask {
     pub(crate) cfg: TaskConfig,
     pub(crate) remote_profile_id: Option<Uuid>,
+    pub(crate) recent_logs: Vec<OperationLogRecord>,
 }
 
 #[derive(Default)]
@@ -189,14 +193,13 @@ impl Draft {
         Self {
             id: cfg.id,
             name: cfg.name.clone(),
-            local: cfg.local.display().to_string(),
+            local: path_text(&cfg.local),
             remote: cfg.remote.clone(),
-            cache_dir: cfg
-                .cache_dir
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR).join(cfg.id.to_string()))
-                .display()
-                .to_string(),
+            cache_dir: path_text(
+                &cfg.cache_dir
+                    .clone()
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_CACHE_DIR).join(cfg.id.to_string())),
+            ),
             include: cfg
                 .include
                 .iter()
@@ -266,7 +269,7 @@ impl RemoteProfileDraft {
             key_path: profile
                 .key
                 .as_ref()
-                .map(|path| path.display().to_string())
+                .map(|path| path_text(path))
                 .unwrap_or_default(),
             fingerprints: profile.fingerprints.join(";"),
         }
@@ -364,6 +367,10 @@ pub(crate) fn absolute_path(path: &PathBuf) -> Result<PathBuf> {
     }
 }
 
+pub(crate) fn path_text(path: &std::path::Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
 pub(crate) fn parse_u64(value: &str, label: &str) -> Result<u64> {
     value
         .trim()
@@ -414,6 +421,7 @@ pub(crate) fn sample_task(
         handle: None,
         log_rx: None,
         logs: Vec::new(),
+        last_operation_log_id: 0,
         state: TaskState::Idle,
         starting: false,
     }

@@ -1,9 +1,9 @@
 use eframe::egui;
 
-use crate::app::FSyncApp;
-use crate::models::{find_remote_profile, patterns_text, state_label, PanelTab};
+use crate::app::{FSyncApp, PatternEditorKind};
+use crate::models::{find_remote_profile, path_text, patterns_text, state_label, PanelTab};
 use crate::widgets::{
-    edit_field, edit_remote_profile_selector, info_tile, status_color, status_dot,
+    edit_field, edit_remote_profile_selector, info_tile_sized, status_color, status_dot,
 };
 
 impl FSyncApp {
@@ -215,54 +215,63 @@ impl FSyncApp {
                 find_remote_profile(&state.remote_profiles, task.remote_profile_id).cloned(),
             )
         };
-        ui.columns(2, |columns| {
-            info_tile(&mut columns[0], "Local", &cfg.local.display().to_string());
-            info_tile(&mut columns[1], "Remote", &cfg.remote);
-
-            info_tile(
-                &mut columns[0],
-                "Profile",
-                profile
-                    .as_ref()
-                    .map(|profile| profile.name.as_str())
-                    .unwrap_or("Unassigned"),
-            );
-            info_tile(&mut columns[1], "Task ID", &cfg.id.to_string());
-
-            info_tile(
-                &mut columns[0],
-                "User",
-                profile
-                    .as_ref()
-                    .map(|profile| profile.user.as_str())
-                    .unwrap_or("-"),
-            );
-            info_tile(
-                &mut columns[1],
-                "Host",
-                profile
-                    .as_ref()
-                    .map(|profile| profile.host.as_str())
-                    .unwrap_or("-"),
-            );
-
-            info_tile(&mut columns[0], "Include", &patterns_text(&cfg.include));
-            info_tile(&mut columns[1], "Exclude", &patterns_text(&cfg.exclude));
-        });
+        dashboard_info_row(
+            ui,
+            "Local",
+            &path_text(&cfg.local),
+            "Remote",
+            &cfg.remote,
+            58.0,
+        );
+        dashboard_info_row(
+            ui,
+            "Profile",
+            profile
+                .as_ref()
+                .map(|profile| profile.name.as_str())
+                .unwrap_or("Unassigned"),
+            "Task ID",
+            &cfg.id.to_string(),
+            58.0,
+        );
+        dashboard_info_row(
+            ui,
+            "User",
+            profile
+                .as_ref()
+                .map(|profile| profile.user.as_str())
+                .unwrap_or("-"),
+            "Host",
+            profile
+                .as_ref()
+                .map(|profile| profile.host.as_str())
+                .unwrap_or("-"),
+            58.0,
+        );
+        dashboard_info_row(
+            ui,
+            "Include",
+            &patterns_text(&cfg.include),
+            "Exclude",
+            &patterns_text(&cfg.exclude),
+            78.0,
+        );
 
         ui.add_space(8.0);
         ui.heading("Logs");
         ui.add_space(4.0);
-        let height = (ui.available_height() - 4.0).max(180.0);
+        let height = ui.available_height().max(180.0);
         egui::Frame::new()
             .corner_radius(6.0)
-            .inner_margin(egui::Margin::same(10))
+            .inner_margin(egui::Margin::symmetric(10, 8))
             .show(ui, |ui| {
-                ui.set_min_height(height);
+                let scroll_height = (height - 20.0).max(120.0);
+                ui.set_min_height(scroll_height);
                 egui::ScrollArea::vertical()
                     .id_salt("task_logs_scroll")
                     .stick_to_bottom(true)
                     .auto_shrink([false, false])
+                    .max_height(scroll_height)
                     .show(ui, |ui| {
                         ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
                         if logs.is_empty() {
@@ -272,6 +281,7 @@ impl FSyncApp {
                                 ui.label(egui::RichText::new(log).monospace());
                             }
                         }
+                        ui.add_space(8.0);
                     });
             });
     }
@@ -292,10 +302,30 @@ impl FSyncApp {
                     edit_field(&mut columns[0], "Local", &mut self.draft.local);
                     edit_field(&mut columns[1], "Remote", &mut self.draft.remote);
                 });
+                let include = self.draft.include.clone();
+                let exclude = self.draft.exclude.clone();
+                let mut edit_include = false;
+                let mut edit_exclude = false;
                 ui.columns(2, |columns| {
-                    edit_field(&mut columns[0], "Include", &mut self.draft.include);
-                    edit_field(&mut columns[1], "Exclude", &mut self.draft.exclude);
+                    edit_include = pattern_preview(
+                        &mut columns[0],
+                        "Include",
+                        &include,
+                        "No include patterns",
+                    );
+                    edit_exclude = pattern_preview(
+                        &mut columns[1],
+                        "Exclude",
+                        &exclude,
+                        "No exclude patterns",
+                    );
                 });
+                if edit_include {
+                    self.open_pattern_editor(PatternEditorKind::Include);
+                }
+                if edit_exclude {
+                    self.open_pattern_editor(PatternEditorKind::Exclude);
+                }
                 edit_remote_profile_selector(
                     ui,
                     &profiles,
@@ -348,4 +378,198 @@ impl FSyncApp {
             }
         }
     }
+
+    pub(super) fn render_pattern_modal(&mut self, ctx: &egui::Context) {
+        let Some(kind) = self.pattern_editor else {
+            return;
+        };
+
+        const MODAL_WIDTH: f32 = 680.0;
+        const MODAL_HEIGHT: f32 = 430.0;
+        const CONTENT_WIDTH: f32 = MODAL_WIDTH - 24.0;
+
+        let mut open = true;
+        egui::Window::new(kind.title())
+            .open(&mut open)
+            .fixed_size(egui::vec2(MODAL_WIDTH, MODAL_HEIGHT))
+            .resizable(false)
+            .collapsible(false)
+            .constrain(true)
+            .show(ctx, |ui| {
+                ui.set_width(CONTENT_WIDTH);
+                ui.horizontal(|ui| {
+                    let edit_width = CONTENT_WIDTH - 80.0;
+                    ui.add_sized(
+                        [edit_width, 28.0],
+                        egui::TextEdit::singleline(&mut self.new_pattern).hint_text("Pattern"),
+                    );
+                    if ui
+                        .add_sized([72.0, 28.0], egui::Button::new("Add"))
+                        .clicked()
+                    {
+                        let pattern = self.new_pattern.trim();
+                        if !pattern.is_empty() {
+                            self.pattern_draft.push(pattern.to_string());
+                            self.new_pattern.clear();
+                        }
+                    }
+                });
+                ui.add_space(8.0);
+
+                egui::Frame::group(ui.style())
+                    .fill(ui.visuals().faint_bg_color)
+                    .inner_margin(egui::Margin::same(8))
+                    .show(ui, |ui| {
+                        ui.set_width(CONTENT_WIDTH);
+                        let height = 300.0;
+                        egui::ScrollArea::vertical()
+                            .id_salt("pattern_editor_list")
+                            .max_height(height)
+                            .auto_shrink([false, false])
+                            .show(ui, |ui| {
+                                ui.set_width(CONTENT_WIDTH - 16.0);
+                                let mut remove_idx = None;
+                                let mut move_up_idx = None;
+                                let mut move_down_idx = None;
+                                let len = self.pattern_draft.len();
+
+                                if len == 0 {
+                                    ui.label(egui::RichText::new("No patterns").weak());
+                                }
+
+                                for idx in 0..len {
+                                    ui.horizontal(|ui| {
+                                        ui.set_width(CONTENT_WIDTH - 16.0);
+                                        ui.label(
+                                            egui::RichText::new(format!("{:02}", idx + 1))
+                                                .small()
+                                                .weak(),
+                                        );
+                                        let edit_width = CONTENT_WIDTH - 188.0;
+                                        ui.add_sized(
+                                            [edit_width, 26.0],
+                                            egui::TextEdit::singleline(
+                                                &mut self.pattern_draft[idx],
+                                            ),
+                                        );
+                                        if ui
+                                            .add_enabled(
+                                                idx > 0,
+                                                egui::Button::new("↑")
+                                                    .min_size(egui::vec2(28.0, 24.0)),
+                                            )
+                                            .on_hover_text("Move up")
+                                            .clicked()
+                                        {
+                                            move_up_idx = Some(idx);
+                                        }
+                                        if ui
+                                            .add_enabled(
+                                                idx + 1 < len,
+                                                egui::Button::new("↓")
+                                                    .min_size(egui::vec2(28.0, 24.0)),
+                                            )
+                                            .on_hover_text("Move down")
+                                            .clicked()
+                                        {
+                                            move_down_idx = Some(idx);
+                                        }
+                                        if ui
+                                            .add_sized([56.0, 24.0], egui::Button::new("Delete"))
+                                            .clicked()
+                                        {
+                                            remove_idx = Some(idx);
+                                        }
+                                    });
+                                    ui.add_space(4.0);
+                                }
+
+                                if let Some(idx) = move_up_idx {
+                                    self.pattern_draft.swap(idx, idx - 1);
+                                }
+                                if let Some(idx) = move_down_idx {
+                                    self.pattern_draft.swap(idx, idx + 1);
+                                }
+                                if let Some(idx) = remove_idx {
+                                    self.pattern_draft.remove(idx);
+                                }
+                            });
+                    });
+
+                ui.add_space(10.0);
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_sized([72.0, 28.0], egui::Button::new("Apply"))
+                        .clicked()
+                    {
+                        self.apply_pattern_editor();
+                    }
+                    if ui
+                        .add_sized([72.0, 28.0], egui::Button::new("Cancel"))
+                        .clicked()
+                    {
+                        self.pattern_editor = None;
+                        self.new_pattern.clear();
+                    }
+                });
+            });
+
+        if !open {
+            self.pattern_editor = None;
+            self.new_pattern.clear();
+        }
+    }
+}
+
+fn pattern_preview(ui: &mut egui::Ui, label: &str, value: &str, empty_text: &str) -> bool {
+    let mut modify_clicked = false;
+    egui::Frame::group(ui.style())
+        .fill(ui.visuals().faint_bg_color)
+        .inner_margin(egui::Margin::symmetric(10, 7))
+        .show(ui, |ui| {
+            ui.set_min_height(58.0);
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new(label).small().weak());
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .add_sized([72.0, 24.0], egui::Button::new("Modify"))
+                        .clicked()
+                    {
+                        modify_clicked = true;
+                    }
+                });
+            });
+            let preview = if value.trim().is_empty() {
+                empty_text
+            } else {
+                value.trim()
+            };
+            ui.add(
+                egui::Label::new(egui::RichText::new(preview).monospace())
+                    .truncate()
+                    .selectable(false),
+            );
+        });
+    modify_clicked
+}
+
+fn dashboard_info_row(
+    ui: &mut egui::Ui,
+    left_label: &str,
+    left_value: &str,
+    right_label: &str,
+    right_value: &str,
+    height: f32,
+) {
+    let spacing = ui.spacing().item_spacing.x;
+    let width = ui.available_width();
+    let column_width = ((width - spacing) / 2.0).max(120.0);
+
+    ui.horizontal_top(|ui| {
+        ui.spacing_mut().item_spacing.x = spacing;
+        let tile_size = egui::vec2(column_width, height);
+        info_tile_sized(ui, left_label, left_value, tile_size);
+        info_tile_sized(ui, right_label, right_value, tile_size);
+    });
+    ui.add_space(spacing);
 }

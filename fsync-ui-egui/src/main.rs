@@ -2,6 +2,7 @@
 
 mod app;
 mod models;
+mod operation_logs;
 mod storage;
 mod theme;
 mod widgets;

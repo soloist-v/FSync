@@ -17,7 +17,8 @@ pub use manager::SyncManager;
 pub use remote::{RemoteFs, RemoteOp};
 pub use storage::StateStore;
 pub use task::{
-    spawn_task, SyncTaskHandle, TaskCommand, TaskEvent, TaskEventHandler, TaskLog, TaskState,
+    spawn_task, RemoteOpLog, RemoteOpStatus, SyncTaskHandle, TaskCommand, TaskEvent,
+    TaskEventHandler, TaskLog, TaskState,
 };
 
 pub use tracing::{debug, error, info, warn};

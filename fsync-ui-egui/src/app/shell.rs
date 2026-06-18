@@ -57,6 +57,7 @@ impl eframe::App for FSyncApp {
         });
 
         self.render_profiles_modal(&ctx);
+        self.render_pattern_modal(&ctx);
 
         if let Some((message, created_at)) = &self.toast {
             if created_at.elapsed() < std::time::Duration::from_secs(4) {

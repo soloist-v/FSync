@@ -1,8 +1,9 @@
 //! SQLite-backed timestamp storage for per-task sync state.
 
+use crate::utils::{display_posix_path, normalize_posix_path_str};
 use anyhow::Result;
 use sqlx::{sqlite::SqlitePoolOptions, SqlitePool};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::Path;
 
@@ -18,7 +19,7 @@ impl StateStore {
         let cache_dir = cache_dir.as_ref();
         fs::create_dir_all(cache_dir)?;
         let db_path = cache_dir.join(STATE_DB_FILE);
-        tracing::info!(db_path = %db_path.display(), "opening sqlite state store");
+        tracing::info!(db_path = %display_posix_path(&db_path), "opening sqlite state store");
 
         let pool = SqlitePoolOptions::new()
             .max_connections(1)
@@ -43,7 +44,7 @@ impl StateStore {
         .execute(&pool)
         .await?;
 
-        tracing::info!(db_path = %db_path.display(), "sqlite state store opened");
+        tracing::info!(db_path = %display_posix_path(&db_path), "sqlite state store opened");
         Ok(Self { pool })
     }
 
@@ -54,6 +55,16 @@ impl StateStore {
                 .fetch_optional(&self.pool)
                 .await?;
         Ok(row.map(|(mtime,)| mtime as u64))
+    }
+
+    pub async fn load_all_u64(&self) -> Result<HashMap<String, u64>> {
+        let rows = sqlx::query_as::<_, (String, i64)>("SELECT local_path, mtime FROM file_states")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(rows
+            .into_iter()
+            .map(|(key, mtime)| (key, mtime as u64))
+            .collect())
     }
 
     pub async fn put_u64(&self, key: String, val: u64) -> Result<()> {
@@ -70,6 +81,31 @@ impl StateStore {
         .bind(i64::try_from(val)?)
         .execute(&self.pool)
         .await?;
+        Ok(())
+    }
+
+    pub async fn put_many_u64(&self, values: &[(String, u64)]) -> Result<()> {
+        if values.is_empty() {
+            return Ok(());
+        }
+
+        let mut tx = self.pool.begin().await?;
+        for (key, val) in values {
+            sqlx::query(
+                r#"
+                INSERT INTO file_states (local_path, mtime, updated_at)
+                VALUES (?1, ?2, CURRENT_TIMESTAMP)
+                ON CONFLICT(local_path) DO UPDATE SET
+                    mtime = excluded.mtime,
+                    updated_at = CURRENT_TIMESTAMP
+                "#,
+            )
+            .bind(key)
+            .bind(i64::try_from(*val)?)
+            .execute(&mut *tx)
+            .await?;
+        }
+        tx.commit().await?;
         Ok(())
     }
 
@@ -137,7 +173,7 @@ impl StateStore {
 }
 
 fn sqlite_url(path: &Path) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    let path = normalize_posix_path_str(&path.to_string_lossy());
     format!("sqlite://{path}?mode=rwc")
 }
 
@@ -147,15 +183,15 @@ fn path_is_self_or_child(path: &str, root: &str) -> bool {
     path == root
         || path
             .strip_prefix(&root)
-            .map(|rest| rest.starts_with('/') || rest.starts_with('\\'))
+            .map(|rest| rest.starts_with('/'))
             .unwrap_or(false)
 }
 
 fn normalize_state_path(path: &str) -> String {
-    let path = path.strip_prefix(r"\\?\").unwrap_or(path);
+    let path = normalize_posix_path_str(path);
     if cfg!(windows) {
         path.to_ascii_lowercase()
     } else {
-        path.to_string()
+        path
     }
 }

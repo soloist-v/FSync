@@ -11,3 +11,4 @@ async-trait = "0.1"
 anyhow = "1.0"
 fsync-core = { path = "../fsync-core" }
 tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"

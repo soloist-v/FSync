@@ -12,14 +12,17 @@ use tracing_subscriber::{fmt, EnvFilter};
 use uuid::Uuid;
 
 use crate::models::{
-    absolute_path, cache_dir_for_config, default_task_cache_dir, placeholder_remote_cfg,
+    absolute_path, cache_dir_for_config, default_task_cache_dir, path_text, placeholder_remote_cfg,
     remote_cfg_from_profile, AppConfig, AppState, LoadedTask, RemoteProfile, TaskView, CONFIG_PATH,
 };
+use crate::operation_logs::{OperationLogNotifier, OperationLogReader, OperationLogWriter};
 
 #[derive(Clone)]
 pub(crate) struct AppStorage {
     pub(crate) pool: SqlitePool,
     pub(crate) config: AppConfig,
+    pub(crate) operation_log_writer: OperationLogWriter,
+    pub(crate) operation_log_reader: OperationLogReader,
 }
 
 pub(crate) fn init_file_logging(config: &AppConfig) -> Result<()> {
@@ -72,7 +75,16 @@ pub(crate) async fn init_storage(config: AppConfig) -> Result<AppStorage> {
         .await?;
     migrate_database(&pool).await?;
     cleanup_orphan_task_caches(&pool, &config.cache_dir).await?;
-    Ok(AppStorage { pool, config })
+    let operation_log_notifier = OperationLogNotifier::new();
+    let operation_log_writer =
+        OperationLogWriter::spawn(pool.clone(), operation_log_notifier.clone());
+    let operation_log_reader = OperationLogReader::new(pool.clone());
+    Ok(AppStorage {
+        pool,
+        config,
+        operation_log_writer,
+        operation_log_reader,
+    })
 }
 
 pub(crate) fn load_config(
@@ -95,7 +107,16 @@ pub(crate) fn load_config(
             remote_profile_id: task.remote_profile_id,
             handle: None,
             log_rx: None,
-            logs: Vec::new(),
+            logs: task
+                .recent_logs
+                .iter()
+                .map(|log| log.display_message())
+                .collect(),
+            last_operation_log_id: task
+                .recent_logs
+                .last()
+                .map(|log| log.id)
+                .unwrap_or_default(),
             state: TaskState::Idle,
             starting: false,
         })
@@ -109,7 +130,7 @@ pub(crate) fn load_config(
 }
 
 fn sqlite_url(path: &PathBuf) -> String {
-    let path = path.to_string_lossy().replace('\\', "/");
+    let path = path_text(path);
     format!("sqlite://{path}?mode=rwc")
 }
 
@@ -166,6 +187,7 @@ async fn migrate_database(pool: &SqlitePool) -> Result<()> {
     )
     .execute(pool)
     .await?;
+    crate::operation_logs::migrate(pool).await?;
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS sync_task_filters (
@@ -210,7 +232,7 @@ async fn cleanup_orphan_task_caches(pool: &SqlitePool, cache_root: &PathBuf) -> 
         }
         let path_abs = absolute_path(&path)?;
         if !live_dirs.iter().any(|dir| dir == &path_abs) {
-            tracing::info!(cache_dir = %path.display(), "removing orphan task cache");
+            tracing::info!(cache_dir = %path_text(&path), "removing orphan task cache");
             fs::remove_dir_all(&path)?;
         }
     }
@@ -360,6 +382,9 @@ async fn read_tasks(
                 remote_cfg,
             },
             remote_profile_id,
+            recent_logs: OperationLogReader::new(pool.clone())
+                .read_recent(&id, 1_000)
+                .await?,
         });
     }
     Ok(tasks)
@@ -413,7 +438,7 @@ async fn replace_state(
         .bind(&profile.host)
         .bind(&profile.user)
         .bind(&profile.password)
-        .bind(profile.key.as_ref().map(|path| path.to_string_lossy().to_string()))
+        .bind(profile.key.as_ref().map(|path| path_text(path)))
         .execute(&mut *tx)
         .await?;
 
@@ -442,10 +467,10 @@ async fn replace_state(
         )
         .bind(cfg.id.to_string())
         .bind(&cfg.name)
-        .bind(cfg.local.to_string_lossy().to_string())
+        .bind(path_text(&cfg.local))
         .bind(&cfg.remote)
         .bind(task.remote_profile_id.map(|id| id.to_string()))
-        .bind(cache_dir_for_config(cfg, cache_root).to_string_lossy().to_string())
+        .bind(path_text(&cache_dir_for_config(cfg, cache_root)))
         .bind(i64::try_from(cfg.scan_ms)?)
         .bind(&cfg.size)
         .bind(i64::from(cfg.retry_max))
@@ -476,6 +501,10 @@ async fn replace_state(
         }
     }
 
+    sqlx::query("DELETE FROM task_operation_logs WHERE task_id NOT IN (SELECT id FROM sync_tasks)")
+        .execute(&mut *tx)
+        .await?;
+
     tx.commit().await?;
     Ok(())
 }
@@ -483,7 +512,7 @@ async fn replace_state(
 pub(crate) fn open_local_dir(path: PathBuf) -> Result<()> {
     let path = path.canonicalize().unwrap_or(path);
     if !path.exists() {
-        return Err(anyhow!("path does not exist: {}", path.display()));
+        return Err(anyhow!("path does not exist: {}", path_text(&path)));
     }
 
     #[cfg(target_os = "windows")]

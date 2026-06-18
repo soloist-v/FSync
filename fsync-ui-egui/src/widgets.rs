@@ -12,15 +12,40 @@ pub(crate) fn panel_frame(ui: &egui::Ui) -> egui::Frame {
         .corner_radius(8.0)
 }
 
-pub(crate) fn info_tile(ui: &mut egui::Ui, label: &str, value: &str) {
-    egui::Frame::group(ui.style())
-        .fill(ui.visuals().faint_bg_color)
-        .inner_margin(egui::Margin::symmetric(10, 7))
-        .show(ui, |ui| {
-            ui.set_min_height(44.0);
-            ui.label(egui::RichText::new(label).small().weak());
-            ui.label(value);
-        });
+pub(crate) fn info_tile_sized(ui: &mut egui::Ui, label: &str, value: &str, size: egui::Vec2) {
+    let (rect, response) = ui.allocate_exact_size(size, egui::Sense::hover());
+    let visuals = ui.visuals();
+    ui.painter().rect(
+        rect,
+        4.0,
+        visuals.faint_bg_color,
+        visuals.widgets.noninteractive.bg_stroke,
+        egui::StrokeKind::Inside,
+    );
+
+    let content = rect.shrink2(egui::vec2(10.0, 7.0));
+    let label_font = egui::TextStyle::Small.resolve(ui.style());
+    let value_font = egui::TextStyle::Body.resolve(ui.style());
+    let label_color = visuals.weak_text_color();
+    let value_color = visuals.text_color();
+    let painter = ui.painter().with_clip_rect(content);
+
+    painter.text(
+        content.left_top(),
+        egui::Align2::LEFT_TOP,
+        label,
+        label_font,
+        label_color,
+    );
+    painter.text(
+        content.left_top() + egui::vec2(0.0, 20.0),
+        egui::Align2::LEFT_TOP,
+        value,
+        value_font,
+        value_color,
+    );
+
+    response.on_hover_text(value);
 }
 
 pub(crate) fn edit_field(ui: &mut egui::Ui, label: &str, value: &mut String) {
